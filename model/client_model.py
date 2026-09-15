@@ -53,8 +53,8 @@ class ModbusMapSettings(BaseModel):
     modbus_r_register_type: Literal["holding", "input"] = "input"
 
 
-class TcpSettings(ModbusMapSettings):
-    mode: Literal["tcp"] = "tcp"
+class ModbusTcpSettings(ModbusMapSettings):
+    mode: Literal["modbus_tcp"] = "modbus_tcp"
     device_id: int = 1
     timeout: float = 3.0
     retries: int = 3
@@ -62,8 +62,8 @@ class TcpSettings(ModbusMapSettings):
     port: int = 502
 
 
-class RtuSettings(ModbusMapSettings):
-    mode: Literal["rtu"] = "rtu"
+class ModbusRtuSettings(ModbusMapSettings):
+    mode: Literal["modbus_rtu"] = "modbus_rtu"
     device_id: int = 1
     timeout: float = 3.0
     retries: int = 3
@@ -86,13 +86,56 @@ class McSettings(BaseModel):
     commtype: str = "binary"
 
 
+class XgtSettings(BaseModel):
+    """LS XGT Dedicated (E_NET). 블록 필드는 nullable.
+
+    - read_start + read_word_count 둘 다 유효: 연속 읽기 후 scan_addresses만 파싱
+    - 둘 다 비움: scan_addresses 점단위 읽기
+    - 한쪽만 채움: 설정 오류
+    """
+
+    mode: Literal["xgt"] = "xgt"
+    device_id: int = 1
+    timeout: float = 3.0
+    retries: int = 3
+    host: str = "127.0.0.1"
+    port: int = 2004
+    # XGK 기본 0xA0. 프레임 CPU Info에 사용
+    cpu_info: int = 0xA0
+    # 연속 읽기 시작 D 번지 (예: "D490000"). 없으면 점단위
+    read_start: str | None = None
+    # 연속 읽을 워드 수. 없으면 점단위
+    read_word_count: int | None = None
+
+    @model_validator(mode="after")
+    def _block_fields_together(self) -> XgtSettings:
+        start = (self.read_start or "").strip()
+        count = self.read_word_count
+        has_start = bool(start)
+        has_count = count is not None and count != 0
+        if has_start != has_count:
+            raise ValueError(
+                "read_start와 read_word_count는 함께 설정하거나 둘 다 비워야 합니다 "
+                f"(read_start={self.read_start!r}, read_word_count={self.read_word_count!r})"
+            )
+        if has_count and count is not None and count < 0:
+            raise ValueError(f"read_word_count는 양수여야 합니다: {count}")
+        # 정규화: 공백만 있는 start → None, 0 → None
+        if not has_start:
+            self.read_start = None
+            self.read_word_count = None
+        else:
+            self.read_start = start
+        return self
+
+
 PlcSettings = Annotated[
-    Union[TcpSettings, RtuSettings, McSettings],
+    Union[ModbusTcpSettings, ModbusRtuSettings, McSettings, XgtSettings],
     Field(discriminator="mode"),
 ]
 
 
-class TcpDevice(TcpSettings):
+class ModbusTcpDevice(ModbusTcpSettings):
     """연결 + 스캔 설정을 포함한 디바이스."""
 
     device_key: str
@@ -105,7 +148,7 @@ class TcpDevice(TcpSettings):
         return _validate_device_key(v)
 
 
-class RtuDevice(RtuSettings):
+class ModbusRtuDevice(ModbusRtuSettings):
     device_key: str
     scan_addresses: list[str] = Field(default_factory=lambda: ["D100"])
     scan_period_ms: int = 1000
@@ -127,8 +170,20 @@ class McDevice(McSettings):
         return _validate_device_key(v)
 
 
+class XgtDevice(XgtSettings):
+    device_key: str
+    # 폴백 빈 목록. 블록 모드면 publish 점, 점단위면 개별 읽기 목록
+    scan_addresses: list[str] = Field(default_factory=list)
+    scan_period_ms: int = 1000
+
+    @field_validator("device_key")
+    @classmethod
+    def _key_no_dot(cls, v: str) -> str:
+        return _validate_device_key(v)
+
+
 DeviceSettings = Annotated[
-    Union[TcpDevice, RtuDevice, McDevice],
+    Union[ModbusTcpDevice, ModbusRtuDevice, McDevice, XgtDevice],
     Field(discriminator="mode"),
 ]
 

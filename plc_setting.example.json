@@ -1,8 +1,8 @@
 {
   "devices": [
     {
-      "device_key": "plc-tcp-1",
-      "mode": "tcp",
+      "device_key": "plc-modbus-tcp-1",
+      "mode": "modbus_tcp",
       "device_id": 1,
       "timeout": 3,
       "retries": 3,
@@ -12,8 +12,8 @@
       "scan_period_ms": 1000
     },
     {
-      "device_key": "plc-rtu-1",
-      "mode": "rtu",
+      "device_key": "plc-modbus-rtu-1",
+      "mode": "modbus_rtu",
       "device_id": 1,
       "timeout": 3,
       "retries": 3,
@@ -42,6 +42,47 @@
       "commtype": "binary",
       "scan_addresses": ["D100", "D100.5", "R0", "M10"],
       "scan_period_ms": 500
+    },
+    {
+      "device_key": "plc-ls-xgt-1",
+      "mode": "xgt",
+      "device_id": 1,
+      "timeout": 3,
+      "retries": 3,
+      "host": "127.0.0.1",
+      "port": 2004,
+      "cpu_info": 160,
+      "read_start": "D490000",
+      "read_word_count": 136,
+      "scan_addresses": [
+        "D490000",
+        "D490000.0",
+        "D490000.2",
+        "D490006",
+        "D490020",
+        "D490025",
+        "D490035",
+        "D490100",
+        "D490100.1",
+        "D490104",
+        "D490130",
+        "D490130.A"
+      ],
+      "scan_period_ms": 1000
+    },
+    {
+      "device_key": "plc-ls-xgt-point-1",
+      "mode": "xgt",
+      "device_id": 1,
+      "timeout": 3,
+      "retries": 3,
+      "host": "127.0.0.1",
+      "port": 2004,
+      "cpu_info": 160,
+      "read_start": null,
+      "read_word_count": null,
+      "scan_addresses": ["D490000", "D490000.0"],
+      "scan_period_ms": 1000
     }
   ]
 }

@@ -23,8 +23,9 @@ from client.base_client import BaseClient
 from client.errors import ClientError, to_client_error
 from client.mc_client import McClient
 from client.modbus_map import ModbusRegisterSpec, assert_modbus_word_device, resolve_modbus_register
-from client.rtu_client import RtuClient
-from client.tcp_client import TcpClient
+from client.modbus_rtu_client import ModbusRtuClient
+from client.modbus_tcp_client import ModbusTcpClient
+from client.xgt_client import XgtClient
 from config import save_devices, settings
 from model.client_model import DeviceSettings, ModbusMapSettings, Settings
 from model.error_model import ClientErrorCategory, ClientErrorCode
@@ -67,13 +68,18 @@ def _on_signal(signum, frame):
 
 def build_client(device: DeviceSettings) -> BaseClient:
     """mode에 맞는 PLC 클라이언트를 생성한다."""
-    if device.mode == "tcp":
-        return TcpClient(device)
-    if device.mode == "rtu":
-        return RtuClient(device)
+    if device.mode == "modbus_tcp":
+        return ModbusTcpClient(device)
+    if device.mode == "modbus_rtu":
+        return ModbusRtuClient(device)
     if device.mode == "mc":
         return McClient(device)
-    raise ValueError(f"알 수 없는 mode: {device.mode} (tcp, rtu 또는 mc)")
+    if device.mode == "xgt":
+        return XgtClient(device)  # type: ignore[return-value]
+    raise ValueError(
+        f"알 수 없는 mode: {device.mode} "
+        "(modbus_tcp, modbus_rtu, mc 또는 xgt)"
+    )
 
 
 def now_ms() -> int:
@@ -117,7 +123,7 @@ def _safe_close(client: BaseClient) -> None:
 
 
 def _modbus_map_settings(client: BaseClient) -> ModbusMapSettings:
-    """TCP/RTU 클라이언트의 Modbus D/R 매핑 설정."""
+    """Modbus TCP/RTU 클라이언트의 D/R 매핑 설정."""
     settings = getattr(client, "settings", None)
     if settings is None or not isinstance(settings, ModbusMapSettings):
         raise ClientError(
@@ -219,8 +225,46 @@ def read_sample(client: BaseClient, addr: str) -> MsgSampleDTO:
 
 
 def read_samples(client: BaseClient, addresses: list[str]) -> list[MsgSampleDTO]:
-    """주소 목록을 순회하며 샘플 리스트를 만든다."""
+    """주소 목록을 순회하며 샘플 리스트를 만든다.
+
+    XGT 블록 모드면 연속 읽기 1회 후 scan_addresses만 파싱한다.
+    """
+    read_scan = getattr(client, "read_scan_samples", None)
+    if callable(read_scan):
+        return _read_scan_samples_bulk(client, addresses, read_scan)
     return [read_sample(client, addr) for addr in addresses]
+
+
+def _read_scan_samples_bulk(
+    _client: BaseClient,
+    addresses: list[str],
+    read_scan,
+) -> list[MsgSampleDTO]:
+    try:
+        rows = read_scan(addresses)
+    except Exception as e:
+        err = _as_client_error(e)
+        if err.code.requires_reconnect:
+            raise err from e
+        logger.warning(
+            "bulk read soft-fail: %s(%s) %s",
+            err.code.value,
+            err.code.label,
+            err.detail or err,
+        )
+        code = _addr_soft_error_code(err, write=False)
+        return [
+            MsgSampleDTO(addr=a, value=None, error=code) for a in addresses
+        ]
+
+    out: list[MsgSampleDTO] = []
+    for addr, value, err_code in rows:
+        if err_code is None:
+            out.append(MsgSampleDTO(addr=addr, value=value, error=None))
+            continue
+        logger.warning("addr read soft-fail %s: %s", addr, err_code)
+        out.append(MsgSampleDTO(addr=addr, value=None, error=err_code))
+    return out
 
 
 def write_item(client: BaseClient, item: MsgWriteItemDTO) -> MsgWriteItemDTO:

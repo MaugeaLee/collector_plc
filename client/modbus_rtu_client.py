@@ -1,13 +1,15 @@
 """Modbus RTU 클라이언트. 연결 설정은 생성자로 주입받는다."""
 
+from __future__ import annotations
+
 from pymodbus.client import ModbusSerialClient
 
 from client.base_client import BaseClient
-from model.client_model import RtuSettings
+from model.client_model import ModbusRtuSettings
 
 
-class RtuClient(BaseClient):
-    def __init__(self, settings: RtuSettings):
+class ModbusRtuClient(BaseClient):
+    def __init__(self, settings: ModbusRtuSettings):
         self.settings = settings
         super().__init__(device_id=settings.device_id)
 

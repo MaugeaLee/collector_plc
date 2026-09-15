@@ -16,7 +16,7 @@ Restart=on-failure
 RestartSec=5
 TimeoutStopSec=30
 
-# RTU(mode: rtu) 시리얼 포트 접근
+# Modbus RTU(mode: modbus_rtu) 시리얼 포트 접근
 SupplementaryGroups=dialout
 
 StandardOutput=journal

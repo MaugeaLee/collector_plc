@@ -1,4 +1,4 @@
-"""TCP/RTU가 공통으로 쓰는 Modbus 읽기/쓰기."""
+"""Modbus TCP/RTU가 공통으로 쓰는 읽기/쓰기."""
 
 from __future__ import annotations
 

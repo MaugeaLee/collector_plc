@@ -34,7 +34,7 @@ Edge PLC 수집기. `devices[]`마다 워커 스레드로 PLC를 주기 스캔�
 동작:
 
 1. **MC (`mode: mc`)** — `McClient.read_device()`가 워드를 읽은 뒤 해당 비트만 0/1로 반환한다.
-2. **Modbus (`mode: tcp` / `rtu`)** — D/R 워드를 읽고 동일하게 비트를 추출한다.
+2. **Modbus (`mode: modbus_tcp` / `modbus_rtu`)** — D/R 워드를 읽고 동일하게 비트를 추출한다.
 
 비트 인덱스는 항상 **0–15**이다. 범위 밖이면 `E-4001(UNSUPPORTED_ADDR)`.
 
@@ -43,7 +43,7 @@ Edge PLC 수집기. `devices[]`마다 워커 스레드로 PLC를 주기 스캔�
 | mode | 지원 | 비고 |
 |------|------|------|
 | `mc` | D, W, R, ZR, SD, SW, Z (워드), M, X, Y, B, L, F, SM (비트) | pymcprotocol에 문자열 그대로 전달 |
-| `tcp` / `rtu` | **D**, **R** (워드·워드.비트) | 아래 Modbus 매핑 필요 |
+| `modbus_tcp` / `modbus_rtu` | **D**, **R** (워드·워드.비트) | 아래 Modbus 매핑 필요 |
 
 ---
 
@@ -63,7 +63,7 @@ R{n}  →  FC03/04 (r_register_type),  index = n - modbus_r_register_start
 - `index`는 pymodbus 기준 **0-based** (Modbus 40001 = index 0).
 - `modbus_r_register_start`이 `null`이면 R 주소는 `E-4001` (의도적 — 매핑 미설정).
 
-### 설정 필드 (`tcp` / `rtu` 디바이스)
+### 설정 필드 (`modbus_tcp` / `modbus_rtu` 디바이스)
 
 | 필드 | 기본값 | 설명 |
 |------|--------|------|
