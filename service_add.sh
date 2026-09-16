@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # collector-plc 를 systemd 서비스로 설치한다.
+# 프로젝트에 이미 있는 .venv 를 그대로 복사해 사용한다. (새로 만들지 않음)
 # 사용: sudo ./service_add.sh
 set -euo pipefail
 
@@ -11,6 +12,7 @@ SERVICE_GROUP="collector"
 UNIT_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 UNIT_FILE="${UNIT_SRC}/systemd/${SERVICE_NAME}.service"
 UNIT_DST="/etc/systemd/system/${SERVICE_NAME}.service"
+VENV_PYTHON="${UNIT_SRC}/.venv/bin/python"
 
 if [[ "${EUID}" -ne 0 ]]; then
   echo "root 권한이 필요합니다. 예: sudo ./service_add.sh" >&2
@@ -22,12 +24,13 @@ if [[ ! -f "${UNIT_FILE}" ]]; then
   exit 1
 fi
 
-if [[ ! -f "${UNIT_SRC}/requirements.txt" ]]; then
-  echo "requirements.txt 가 없습니다: ${UNIT_SRC}" >&2
+if [[ ! -x "${VENV_PYTHON}" ]]; then
+  echo "프로젝트 .venv 가 없습니다: ${VENV_PYTHON}" >&2
+  echo "먼저 프로젝트에서 venv 를 준비한 뒤 다시 실행하세요." >&2
   exit 1
 fi
 
-echo "[1/7] 시스템 사용자/그룹 확인 (${SERVICE_USER})"
+echo "[1/6] 시스템 사용자/그룹 확인 (${SERVICE_USER})"
 if ! getent group "${SERVICE_GROUP}" >/dev/null; then
   groupadd --system "${SERVICE_GROUP}"
 fi
@@ -40,11 +43,14 @@ if getent group dialout >/dev/null; then
   usermod -aG dialout "${SERVICE_USER}" || true
 fi
 
-echo "[2/7] 설치 디렉터리 동기화 → ${INSTALL_DIR}"
+echo "[2/6] 설치 디렉터리 동기화 (코드 + .venv) → ${INSTALL_DIR}"
 mkdir -p "${INSTALL_DIR}"
+# 이전에 실패한 빈 .venv 가 있으면 지우고 원본으로 덮어쓴다
+if [[ -d "${INSTALL_DIR}/.venv" ]] && [[ ! -x "${INSTALL_DIR}/.venv/bin/python" ]]; then
+  rm -rf "${INSTALL_DIR}/.venv"
+fi
 rsync -a --delete \
   --exclude '.git/' \
-  --exclude '.venv/' \
   --exclude '__pycache__/' \
   --exclude '*.pyc' \
   --exclude '.env' \
@@ -53,7 +59,12 @@ rsync -a --delete \
   --exclude 'docs/' \
   "${UNIT_SRC}/" "${INSTALL_DIR}/"
 
-echo "[3/7] 설정 디렉터리 → ${CONFIG_DIR}"
+if [[ ! -x "${INSTALL_DIR}/.venv/bin/python" ]]; then
+  echo "동기화 후 .venv/bin/python 이 없습니다: ${INSTALL_DIR}/.venv" >&2
+  exit 1
+fi
+
+echo "[3/6] 설정 디렉터리 → ${CONFIG_DIR}"
 mkdir -p "${CONFIG_DIR}"
 if [[ ! -f "${CONFIG_DIR}/.env" ]]; then
   if [[ -f "${UNIT_SRC}/.env.example" ]]; then
@@ -68,7 +79,7 @@ else
 fi
 
 # 앱은 WorkingDirectory 기준 상대경로로 plc_setting.json 을 읽는다.
-# 운영 설정은 /etc 에 두고, 설치 트리에는 심링크(또는 최초 복사)로 연결한다.
+# 운영 설정은 /etc 에 두고, 설치 트리에는 심링크로 연결한다.
 if [[ ! -f "${CONFIG_DIR}/plc_setting.json" ]]; then
   if [[ -f "${UNIT_SRC}/plc_setting.json" ]]; then
     cp "${UNIT_SRC}/plc_setting.json" "${CONFIG_DIR}/plc_setting.json"
@@ -83,30 +94,21 @@ else
   echo "  기존 plc_setting.json 유지: ${CONFIG_DIR}/plc_setting.json"
 fi
 
-# /opt 쪽에서도 같은 파일을 보도록 연결 (config.py BASE_DIR 상대경로)
 ln -sfn "${CONFIG_DIR}/plc_setting.json" "${INSTALL_DIR}/plc_setting.json"
-# EnvironmentFile 과 별도로 load_dotenv(BASE_DIR/.env) 도 동작하도록 연결
 ln -sfn "${CONFIG_DIR}/.env" "${INSTALL_DIR}/.env"
 
-echo "[4/7] Python venv 및 의존성"
-if [[ ! -x "${INSTALL_DIR}/.venv/bin/python" ]]; then
-  python3 -m venv "${INSTALL_DIR}/.venv"
-fi
-"${INSTALL_DIR}/.venv/bin/pip" install --upgrade pip
-"${INSTALL_DIR}/.venv/bin/pip" install -r "${INSTALL_DIR}/requirements.txt"
-
-echo "[5/7] 소유권"
+echo "[4/6] 소유권"
 chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${INSTALL_DIR}"
 chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${CONFIG_DIR}"
 chmod 750 "${CONFIG_DIR}"
 chmod 640 "${CONFIG_DIR}/.env" "${CONFIG_DIR}/plc_setting.json"
 
-echo "[6/7] systemd 유닛 설치"
+echo "[5/6] systemd 유닛 설치"
 cp "${UNIT_FILE}" "${UNIT_DST}"
 systemctl daemon-reload
 systemctl enable "${SERVICE_NAME}.service"
 
-echo "[7/7] 서비스 시작"
+echo "[6/6] 서비스 시작"
 systemctl restart "${SERVICE_NAME}.service"
 systemctl --no-pager --full status "${SERVICE_NAME}.service" || true
 
