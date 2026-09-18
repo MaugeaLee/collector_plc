@@ -37,7 +37,11 @@ def to_dw_var(word_num: int) -> str:
 
 
 def to_dx_var(word_num: int, bit: int) -> str:
-    """D 워드.비트 → 개별 BIT `%DXxxxx.y`."""
+    """D 워드.비트 → `%DXxxxx.y` 표기 (참고용).
+
+    XGT 프로토콜에서 D는 Bit 개별 읽기 불가(Byte/Word만). 실제 비트 스캔은
+    `%DW` 워드 읽기 후 비트 추출을 쓴다 (`XgtClient._read_bit`).
+    """
     return f"%DX{word_num}.{_bit_suffix(bit)}"
 
 

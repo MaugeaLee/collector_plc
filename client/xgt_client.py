@@ -10,6 +10,7 @@ from typing import Literal
 from client.addr import (
     as_signed16,
     as_unsigned16,
+    extract_word_bit,
     parse_addr_span,
     parse_plc_addr,
 )
@@ -20,11 +21,9 @@ from client.xgt_addr import (
     value_from_block_words,
 )
 from client.xgt_frame import (
-    DATA_TYPE_BIT,
     DATA_TYPE_CONTINUOUS_BYTE,
     DATA_TYPE_WORD,
     HEADER_SIZE,
-    build_bit_read,
     build_continuous_read,
     build_word_read,
     parse_read_ack,
@@ -212,19 +211,9 @@ class XgtClient:
         return as_unsigned16(words[0])
 
     def _read_bit(self, word_num: int, bit: int) -> int:
-        from client.xgt_addr import to_dx_var
-
-        invoke = self._next_invoke()
-        req = build_bit_read(
-            invoke_id=invoke,
-            var_name=to_dx_var(word_num, bit),
-            cpu_info=self.settings.cpu_info,
-        )
-        raw = self._transact(req)
-        _h, _t, data = parse_read_ack(raw, expected_type=DATA_TYPE_BIT)
-        if not data:
-            raise ClientError(ClientErrorCode.PROTOCOL_ERROR, "BIT 응답 Data 없음")
-        return 1 if data[0] else 0
+        # XGT 전용 프로토콜: D 디바이스는 Bit 개별 접근 불가(Byte/Word만).
+        # %DX… 요청은 성공처럼 보여도 항상 0이 될 수 있어 %DW 읽기 후 비트 추출.
+        return extract_word_bit(self._read_word_raw(word_num), bit)
 
     def read_scan_point(self, point: ScanPoint) -> int | str:
         """점단위로 ScanPoint 한 건을 읽어 디코드한다."""

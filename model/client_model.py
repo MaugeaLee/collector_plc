@@ -103,7 +103,7 @@ class XgtSettings(BaseModel):
     retries: int = 3
     host: str = "127.0.0.1"
     port: int = 2004
-    # XGK 기본 0xA0. 프레임 CPU Info에 사용
+    # XGK 기본 0xA0. 프레임 CPU Info에 사용 (int 또는 "0xA0" 문자열)
     cpu_info: int = 0xA0
     # 연속 읽기 시작 D 번지 (예: "D490000"). 없으면 점단위
     read_start: str | None = None
@@ -111,6 +111,22 @@ class XgtSettings(BaseModel):
     read_word_count: int | None = None
     # 다중 워드 int/ascii 합성 엔디안 (디바이스 공통)
     word_endian: Literal["le", "be"] = "le"
+
+    @field_validator("cpu_info", mode="before")
+    @classmethod
+    def _parse_cpu_info(cls, v: object) -> int:
+        if isinstance(v, bool):
+            raise ValueError(f"cpu_info는 bool이 될 수 없습니다: {v!r}")
+        if isinstance(v, int):
+            return v
+        if isinstance(v, str):
+            s = v.strip()
+            try:
+                # 0xA0 / 160 / 0o240 등 int(..., 0) 접두 자동 판별
+                return int(s, 0)
+            except ValueError as e:
+                raise ValueError(f"cpu_info 형식이 올바르지 않습니다: {v!r}") from e
+        raise ValueError(f"cpu_info는 int 또는 헥사/십진 문자열이어야 합니다: {v!r}")
 
     @model_validator(mode="after")
     def _block_fields_together(self) -> XgtSettings:
