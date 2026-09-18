@@ -19,12 +19,15 @@ from client.addr import (
     as_signed16,
     as_unsigned16,
     extract_word_bit,
+    parse_addr_span,
     parse_plc_addr,
 )
 from client.base_client import BaseClient
 from client.errors import ClientError, to_client_error
+from client.scan_decode import decode_scan_words, soft_addr_error_code
 from model.client_model import McSettings
 from model.error_model import ClientErrorCode
+from model.scan_model import ScanPoint, ScanPointType
 
 # 워드 단위 접근
 _WORD_DEVICES = frozenset({"D", "W", "R", "ZR", "SD", "SW", "Z"})
@@ -176,6 +179,54 @@ class McClient(BaseClient):
 
     def write_registers(self, address: int, values: list[int]):
         self.write_words(f"D{address}", values)
+
+    @property
+    def word_endian(self):
+        return getattr(self.settings, "word_endian", "le")
+
+    def read_scan_point(self, point: ScanPoint) -> int | str:
+        """ScanPoint 한 건을 읽어 디코드한다 (word/bit/int/ascii)."""
+        span = parse_addr_span(point.addr)
+        if point.type is ScanPointType.BIT:
+            if span.kind not in _WORD_DEVICES or span.bit is None:
+                raise ClientError(
+                    ClientErrorCode.UNSUPPORTED_ADDR,
+                    f"비트 표기는 워드 디바이스만 지원: {point.addr}",
+                )
+            word = as_unsigned16(
+                self.read_words(f"{span.kind}{span.start}", 1)[0]
+            )
+            return extract_word_bit(word, span.bit)
+        if span.kind not in _WORD_DEVICES:
+            raise ClientError(
+                ClientErrorCode.UNSUPPORTED_ADDR,
+                f"int/ascii/word 는 워드 디바이스만 지원: {point.addr}",
+            )
+        raw = [
+            as_unsigned16(w)
+            for w in self.read_words(
+                f"{span.kind}{span.start}", span.word_count
+            )
+        ]
+        return decode_scan_words(raw, point, endian=self.word_endian)
+
+    def read_scan_samples(
+        self, points: list[ScanPoint]
+    ) -> list[tuple[str, ScanPointType, int | str | None, str | None]]:
+        """스캔 포인트 목록을 점단위로 읽는다."""
+        out: list[tuple[str, ScanPointType, int | str | None, str | None]] = []
+        for point in points:
+            try:
+                out.append(
+                    (point.addr, point.type, self.read_scan_point(point), None)
+                )
+            except ClientError as e:
+                if e.code.requires_reconnect:
+                    raise
+                out.append(
+                    (point.addr, point.type, None, soft_addr_error_code(e))
+                )
+        return out
 
     def _mc_call(self, default: ClientErrorCode, call):
         try:

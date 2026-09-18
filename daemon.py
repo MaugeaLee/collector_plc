@@ -23,14 +23,24 @@ from client.addr import (
     as_signed16,
     as_unsigned16,
     extract_word_bit,
+    parse_addr_span,
     parse_plc_addr,
 )
 from client.base_client import BaseClient
 from client.errors import ClientError, to_client_error
 from client.mc_client import McClient
-from client.modbus_map import ModbusRegisterSpec, assert_modbus_word_device, resolve_modbus_register
+from client.modbus_map import (
+    ModbusRegisterSpec,
+    assert_modbus_word_device,
+    resolve_modbus_register,
+)
 from client.modbus_rtu_client import ModbusRtuClient
 from client.modbus_tcp_client import ModbusTcpClient
+from client.scan_decode import (
+    MODBUS_MAX_REGISTERS,
+    decode_scan_words,
+    soft_addr_error_code,
+)
 from client.xgt_client import XgtClient
 from config import save_devices, settings
 from model.client_model import DeviceSettings, ModbusMapSettings, Settings
@@ -49,7 +59,6 @@ from model.protocol_model import (
     ProtocolHeaderDTO,
 )
 from model.scan_model import ScanPoint, ScanPointType, resolve_scan_points
-
 from zeromq_client.zmq_client import ZeroMqClient
 
 logger = logging.getLogger(__name__)
@@ -199,15 +208,72 @@ def write_addr(client: BaseClient, addr: str, value: int) -> None:
     word = _read_modbus_word(client, spec)
     _write_modbus_word(client, spec, apply_word_bit(word, bit, value))
 
+
+def _read_modbus_words(
+    client: BaseClient,
+    spec: ModbusRegisterSpec,
+    count: int,
+) -> list[int]:
+    """연속 레지스터를 읽는다. 125워드 초과 시 청크 분할."""
+    if count < 1:
+        raise ClientError(
+            ClientErrorCode.ADDR_FORMAT_INVALID,
+            f"Modbus 읽기 count 오류: {count}",
+        )
+    out: list[int] = []
+    index = spec.index
+    remaining = count
+    while remaining > 0:
+        n = min(MODBUS_MAX_REGISTERS, remaining)
+        if spec.register_kind == "holding":
+            chunk = client.read_holding_registers(index, count=n)
+        else:
+            chunk = client.read_input_registers(index, count=n)
+        if len(chunk) < n:
+            raise ClientError(
+                ClientErrorCode.READ_FAILED,
+                f"Modbus 레지스터 수 부족: want={n} got={len(chunk)} "
+                f"index={index}",
+            )
+        out.extend(as_unsigned16(v) for v in chunk[:n])
+        index += n
+        remaining -= n
+    return out
+
+
+def _read_modbus_scan_point(client: BaseClient, point: ScanPoint) -> int | str:
+    """Modbus TCP/RTU 에서 ScanPoint 한 건을 디코드한다."""
+    span = parse_addr_span(point.addr)
+    endian = getattr(getattr(client, "settings", None), "word_endian", "le")
+    if point.type is ScanPointType.BIT:
+        return read_addr(client, point.addr)
+    if point.type is ScanPointType.WORD:
+        return read_addr(client, point.addr)
+
+    assert_modbus_word_device(span.kind, point.addr)
+    map_settings = _modbus_map_settings(client)
+    start_spec = resolve_modbus_register(span.kind, span.start, map_settings)
+    end_spec = resolve_modbus_register(span.kind, span.end, map_settings)
+    if start_spec.register_kind != end_spec.register_kind:
+        raise ClientError(
+            ClientErrorCode.INVALID_CONFIG,
+            f"구간 레지스터 종류 불일치: {point.addr}",
+        )
+    if end_spec.index - start_spec.index + 1 != span.word_count:
+        raise ClientError(
+            ClientErrorCode.ADDR_OUT_OF_RANGE,
+            f"Modbus 인덱스가 비연속: {point.addr} "
+            f"(start_idx={start_spec.index}, end_idx={end_spec.index})",
+        )
+    words = _read_modbus_words(client, start_spec, span.word_count)
+    return decode_scan_words(words, point, endian=endian)
+
+
 def _addr_soft_error_code(err: ClientError, *, write: bool) -> str:
     """번지 soft-fail용 에러 코드 문자열을 고른다."""
-    # 의미가 분명한 번지 오류는 그대로 노출 (E-2201/2202로 덮지 않음)
-    if err.code in (
-        ClientErrorCode.UNSUPPORTED_ADDR,
-        ClientErrorCode.ADDR_OUT_OF_RANGE,
-        ClientErrorCode.ADDR_FORMAT_INVALID,
-    ):
-        return err.code.value
+    code = soft_addr_error_code(err)
+    if code != ClientErrorCode.ADDR_READ_FAILED.value:
+        return code
     return (
         ClientErrorCode.ADDR_WRITE_FAILED.value
         if write
@@ -245,17 +311,16 @@ def read_sample(client: BaseClient, addr: str) -> MsgSampleDTO:
 
 
 def read_sample_point(client: BaseClient, point: ScanPoint) -> MsgSampleDTO:
-    """ScanPoint 단건 읽기 (XGT 외: word|bit만, int/ascii는 soft-fail)."""
+    """ScanPoint 단건 읽기 (모든 모드: word/bit/int/ascii)."""
     try:
-        if point.type in (ScanPointType.INT, ScanPointType.ASCII):
-            raise ClientError(
-                ClientErrorCode.UNSUPPORTED_ADDR,
-                f"{point.type.value} 는 현재 XGT scan 경로만 지원: {point.addr}",
-            )
+        if hasattr(client, "read_scan_point"):
+            value = client.read_scan_point(point)
+        else:
+            value = _read_modbus_scan_point(client, point)
         return MsgSampleDTO(
             addr=point.addr,
             type=point.type,
-            value=read_addr(client, point.addr),
+            value=value,
             error=None,
         )
     except Exception as e:

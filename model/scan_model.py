@@ -1,4 +1,8 @@
-"""스캔 포인트(주소+타입) 스키마."""
+"""스캔 포인트(주소+타입) 스키마.
+
+SSOT: 모든 PLC mode(XGT/MC/Modbus)가 동일 ScanPoint·디코드를 쓴다.
+레거시 scan_addresses/d_address 는 word|bit 로만 승격.
+"""
 
 from __future__ import annotations
 

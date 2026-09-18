@@ -12,10 +12,9 @@ from client.addr import (
     as_unsigned16,
     parse_addr_span,
     parse_plc_addr,
-    words_to_ascii,
-    words_to_int,
 )
 from client.errors import ClientError, to_client_error
+from client.scan_decode import decode_scan_words, soft_addr_error_code
 from client.xgt_addr import (
     resolve_block,
     value_from_block_words,
@@ -36,16 +35,6 @@ from model.error_model import ClientErrorCode
 from model.scan_model import ScanPoint, ScanPointType
 
 logger = logging.getLogger(__name__)
-
-
-def _soft_addr_code(err: ClientError) -> str:
-    if err.code in (
-        ClientErrorCode.UNSUPPORTED_ADDR,
-        ClientErrorCode.ADDR_OUT_OF_RANGE,
-        ClientErrorCode.ADDR_FORMAT_INVALID,
-    ):
-        return err.code.value
-    return ClientErrorCode.ADDR_READ_FAILED.value
 
 
 class XgtClient:
@@ -249,16 +238,7 @@ class XgtClient:
             assert span.bit is not None
             return self._read_bit(span.start, span.bit)
         raw = self._read_words_raw(span.start, span.word_count)
-        if point.type is ScanPointType.WORD:
-            return as_signed16(raw[0])
-        if point.type is ScanPointType.INT:
-            return words_to_int(raw, endian=self.word_endian)
-        if point.type is ScanPointType.ASCII:
-            return words_to_ascii(raw, endian=self.word_endian)
-        raise ClientError(
-            ClientErrorCode.UNSUPPORTED_ADDR,
-            f"지원하지 않는 scan type: {point.type}",
-        )
+        return decode_scan_words(raw, point, endian=self.word_endian)
 
     def read_scan_samples(
         self, points: list[ScanPoint]
@@ -290,7 +270,12 @@ class XgtClient:
                     if e.code.requires_reconnect:
                         raise
                     out.append(
-                        (point.addr, point.type, None, _soft_addr_code(e))
+                        (
+                            point.addr,
+                            point.type,
+                            None,
+                            soft_addr_error_code(e),
+                        )
                     )
             return out
 
@@ -308,5 +293,7 @@ class XgtClient:
             except ClientError as e:
                 if e.code.requires_reconnect:
                     raise
-                out.append((point.addr, point.type, None, _soft_addr_code(e)))
+                out.append(
+                    (point.addr, point.type, None, soft_addr_error_code(e))
+                )
         return out

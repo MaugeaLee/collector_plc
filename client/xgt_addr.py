@@ -5,17 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from client.addr import (
-    as_signed16,
-    as_unsigned16,
-    extract_word_bit,
-    parse_addr_span,
-    words_to_ascii,
-    words_to_int,
-)
+from client.addr import as_unsigned16, parse_addr_span
 from client.errors import ClientError
+from client.scan_decode import decode_scan_words
 from model.error_model import ClientErrorCode
-from model.scan_model import ScanPoint, ScanPointType
+from model.scan_model import ScanPoint
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,16 +133,4 @@ def value_from_block_words(
         span_end=span.end,
         addr=point.addr,
     )
-    if point.type is ScanPointType.BIT:
-        assert span.bit is not None
-        return extract_word_bit(sliced[0], span.bit)
-    if point.type is ScanPointType.WORD:
-        return as_signed16(sliced[0])
-    if point.type is ScanPointType.INT:
-        return words_to_int(sliced, endian=word_endian)
-    if point.type is ScanPointType.ASCII:
-        return words_to_ascii(sliced, endian=word_endian)
-    raise ClientError(
-        ClientErrorCode.UNSUPPORTED_ADDR,
-        f"지원하지 않는 scan type: {point.type}",
-    )
+    return decode_scan_words(sliced, point, endian=word_endian)
