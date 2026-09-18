@@ -14,7 +14,13 @@ from __future__ import annotations
 
 from pymcprotocol import Type3E
 
-from client.addr import apply_word_bit, extract_word_bit, parse_plc_addr
+from client.addr import (
+    apply_word_bit,
+    as_signed16,
+    as_unsigned16,
+    extract_word_bit,
+    parse_plc_addr,
+)
 from client.base_client import BaseClient
 from client.errors import ClientError, to_client_error
 from model.client_model import McSettings
@@ -69,10 +75,11 @@ class McClient(BaseClient):
         )
 
     def write_words(self, headdevice: str, values: list[int]):
+        normed = [as_unsigned16(v) for v in values]
         self._mc_call(
             ClientErrorCode.WRITE_FAILED,
             lambda: self.client.batchwrite_wordunits(
-                headdevice=headdevice, values=values
+                headdevice=headdevice, values=normed
             ),
         )
 
@@ -107,10 +114,10 @@ class McClient(BaseClient):
                     ClientErrorCode.UNSUPPORTED_ADDR,
                     f"비트 주소는 count=1만 지원: {addr}",
                 )
-            word = int(self.read_words(head, 1)[0])
+            word = as_unsigned16(self.read_words(head, 1)[0])
             return [extract_word_bit(word, bit)]
         if kind in _WORD_DEVICES:
-            return [int(v) for v in self.read_words(head, count)]
+            return [as_signed16(v) for v in self.read_words(head, count)]
         if kind in _BIT_DEVICES:
             return [int(v) for v in self.read_bits(head, count)]
         raise ClientError(
@@ -135,11 +142,11 @@ class McClient(BaseClient):
                     ClientErrorCode.UNSUPPORTED_ADDR,
                     f"비트 주소는 값 1개만 지원: {addr}",
                 )
-            word = int(self.read_words(head, 1)[0])
+            word = as_unsigned16(self.read_words(head, 1)[0])
             self.write_words(head, [apply_word_bit(word, bit, values[0])])
             return
         if kind in _WORD_DEVICES:
-            self.write_words(head, [int(v) for v in values])
+            self.write_words(head, [as_unsigned16(v) for v in values])
             return
         if kind in _BIT_DEVICES:
             self.write_bits(head, [int(v) for v in values])

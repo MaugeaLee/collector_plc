@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from model.client_model import DeviceSettings
 from model.error_model import ClientErrorCode
+from model.scan_model import ScanPoint, ScanPointType
 
 
 class MsgTypeEnum(StrEnum):
@@ -51,7 +52,10 @@ class ProtocolHeaderDTO(BaseModel):
 class MsgCmdRDTO(BaseModel):
     device_key: str
     action: MsgCmdREnum
+    # 레거시: 문자열 주소 목록 (word|bit 로 승격)
     d_address: Optional[List[str]] = None
+    # 신규: 타입 포함 스캔 목록 (있으면 d_address보다 우선)
+    scan: Optional[List[ScanPoint]] = None
     period_ms: Optional[int] = None
     # SET_DEVICE: DeviceSettings와 동일 (device_key는 body.device_key와 일치)
     device_setup: Optional[DeviceSettings] = None
@@ -95,7 +99,8 @@ class MsgHealthDTO(BaseModel):
 
 class MsgSampleDTO(BaseModel):
     addr: str
-    value: Optional[int] = None
+    type: Optional[ScanPointType] = None
+    value: Optional[Union[int, str]] = None
     error: Optional[str] = None
 
 

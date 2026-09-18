@@ -4,6 +4,173 @@ Edge PLC 수집기. `devices[]`마다 워커 스레드로 PLC를 주기 스캔�
 
 ---
 
+## Scan SSOT (타 프로세스 계약)
+
+주기 스캔 목록의 **단일 진실 공급원(SSOT)** 은 `ScanPoint` (`addr` + `type`) 이다.  
+스키마 정의: `model/scan_model.py`, 와이어 DTO: `model/protocol_model.py`.
+
+### 두 포맷
+
+| 역할 | `plc_setting.json` | `cmd_r` SET_SCAN body |
+|------|--------------------|------------------------|
+| **신규 SSOT** (권장) | `scan: [{ "addr", "type" }, …]` | `scan: [{ "addr", "type" }, …]` |
+| **레거시** | `scan_addresses: ["D100", …]` | `d_address: ["D100", …]` |
+
+**우선순위:** `scan`이 비어 있지 않으면 `scan`만 사용. 없으면 레거시 목록을 word|bit로 승격.
+
+| 레거시 주소 | 승격 `type` |
+|-------------|-------------|
+| `D800.0` / `D800.A` (워드.비트) | `bit` |
+| `R3000` (단일 워드) | `word` |
+| `D100~101` 등 구간 | **불가** → `scan` 사용 |
+
+`SET_SCAN`에서 `scan`을 보내면 collector는 `scan_addresses`에 addr만 미러링한다(로그·구버전 호환).  
+`d_address`만 보내면 `scan`은 비우고 레거시 경로로 동작한다.
+
+### ScanPoint
+
+```json
+{ "addr": "D100", "type": "word" }
+```
+
+| `type` | `addr` 제약 | 값 |
+|--------|-------------|-----|
+| `word` | 단일 워드 (`D100`) | `int` (16bit) |
+| `bit` | 워드.비트 단일 (`D100.0`, `D800.A`) | `0` / `1` |
+| `int` | **2워드 이상 구간** (`D100~101`) | 다중 워드 정수 (엔디안: 디바이스 `word_endian`) |
+| `ascii` | 비트 불가, 1워드 이상 구간 또는 단일 (`D100~103`) | 문자열 |
+
+구간 표기: `D100~200`, `D100~D200`, `ZR10~ZR20` (`~` 앞뒤 공백 허용). 시작·끝 디바이스 코드가 다르면 거부.
+
+> **구현 범위:** `int` / `ascii`는 현재 **XGT `scan` 경로**에서만 읽기 지원.  
+> MC / Modbus는 `word`·`bit`만. 그 외 type은 샘플 `error`로 soft-fail (`E-4001`).
+
+### 스캔 목록이 오는 경로
+
+1. **부팅** — `plc_setting.json`의 `devices[].scan` 또는 `scan_addresses` (+ `scan_period_ms`)
+2. **런타임** — 상위(게이트웨이) → ZeroMQ `cmd_r` `SET_SCAN`으로 덮어씀 (재연결 없음)
+
+로컬 설정만으로도 동작한다. 상위가 동적으로 바꾸려면 `SET_SCAN`을 보낸다.
+
+### ZeroMQ 토픽·프레임
+
+- 토픽: `collector.plc.{devices[].device_key}.{msg_type}`  
+  예: `collector.plc.plc-mitsubishi-1.cmd_r` / `.data` / `.ack`
+- multipart: `[topic_utf8, header_json_utf8]`
+- `ProtocolHeaderDTO`: `msg_id`, `gateway_address`, `collector_address`(= `device_key`), `msg_type`, `msg_body`, `timestamp_ms`
+
+### `cmd_r` SET_SCAN
+
+`msg_type`: `"cmd_r"`  
+`msg_body` (`MsgCmdRDTO`):
+
+| 필드 | 필수 | 설명 |
+|------|------|------|
+| `device_key` | ✅ | 헤더 `collector_address`와 **동일**해야 함 |
+| `action` | ✅ | `"SET_SCAN"` |
+| `timeout_ms` | ✅ | 수신 시각 기준 허용 소요(ms) |
+| `scan` | △ | 신규 SSOT. 있으면 `d_address`보다 우선 |
+| `d_address` | △ | 레거시 주소 문자열 목록 |
+| `period_ms` | △ | 스캔 주기(ms). 생략 시 기존 유지 |
+| `device_setup` | — | SET_SCAN에서는 사용 안 함 |
+
+`scan` / `d_address` / `period_ms` 중 **최소 하나** 필요. 없으면 ACK `E-4105`.
+
+#### 권장 예 (SSOT)
+
+```json
+{
+  "msg_id": "…",
+  "gateway_address": "gateway",
+  "collector_address": "plc-mitsubishi-1",
+  "msg_type": "cmd_r",
+  "timestamp_ms": 0,
+  "msg_body": {
+    "device_key": "plc-mitsubishi-1",
+    "action": "SET_SCAN",
+    "timeout_ms": 3000,
+    "period_ms": 1000,
+    "scan": [
+      { "addr": "R3000", "type": "word" },
+      { "addr": "D800.0", "type": "bit" },
+      { "addr": "D100~101", "type": "int" }
+    ]
+  }
+}
+```
+
+#### 레거시 예
+
+```json
+{
+  "device_key": "plc-mitsubishi-1",
+  "action": "SET_SCAN",
+  "timeout_ms": 3000,
+  "d_address": ["R3000", "D800.0"],
+  "period_ms": 1000
+}
+```
+
+### `plc_setting.json` 예
+
+```json
+{
+  "device_key": "plc-ls-xgt-1",
+  "mode": "xgt",
+  "scan_period_ms": 1000,
+  "word_endian": "le",
+  "scan": [
+    { "addr": "D490000", "type": "word" },
+    { "addr": "D490000.0", "type": "bit" },
+    { "addr": "D490100~490101", "type": "int" }
+  ]
+}
+```
+
+레거시만 쓸 때:
+
+```json
+"scan_addresses": ["D1600", "R3000", "D1600.0"]
+```
+
+### PUB `data` 샘플
+
+주기 스캔 결과는 `msg_type: "data"`, body `MsgDataDTO`:
+
+```json
+{
+  "device_key": "plc-mitsubishi-1",
+  "sample_ms": 0,
+  "samples": [
+    { "addr": "R3000", "type": "word", "value": 12, "error": null },
+    { "addr": "D800.0", "type": "bit", "value": 1, "error": null },
+    { "addr": "D510300", "type": "word", "value": null, "error": "E-2203" }
+  ]
+}
+```
+
+번지 단위 실패는 soft-fail (`value: null` + `error` 코드). 스캔 루프는 계속된다.
+
+### 관련 `cmd_r` action
+
+| action | 상태 | 비고 |
+|--------|------|------|
+| `SET_SCAN` | 구현 | 스캔 목록·주기만 (재연결 없음) |
+| `SET_DEVICE` | 구현 | `device_setup` 전체 교체 + 재연결 |
+| `READ_ONCE` / `STOP` | 미구현 | ACK `E-4102` |
+
+### 구현 참조
+
+| 파일 | 역할 |
+|------|------|
+| `model/scan_model.py` | `ScanPoint`, `ScanPointType`, `resolve_scan_points` |
+| `model/protocol_model.py` | `MsgCmdRDTO`, `MsgDataDTO`, `MsgSampleDTO` |
+| `model/client_model.py` | 디바이스의 `scan` / `scan_addresses` |
+| `daemon.py` | `_apply_set_scan`, `device_scan_points` |
+| `client/addr.py` | 단일·비트·구간 파싱 |
+
+---
+
 ## 주소 문자열 파싱
 
 스캔·쓰기에 쓰는 주소는 `client/addr.py`의 `parse_plc_addr()`으로 분해한다.
@@ -12,6 +179,7 @@ Edge PLC 수집기. `devices[]`마다 워커 스레드로 PLC를 주기 스캔�
 
 ```text
 {디바이스}{번호}[.{비트}]
+{디바이스}{시작}~[{디바이스}]{끝}   ← 구간 (Scan SSOT의 int/ascii)
 ```
 
 | 예 | 디바이스 | 번호 | 비트 |
@@ -21,6 +189,7 @@ Edge PLC 수집기. `devices[]`마다 워커 스레드로 PLC를 주기 스캔�
 | `D800.A` | D | 800 | 10 (16진 A) |
 | `R3000` | R | 3000 | (워드 전체) |
 | `ZR10` | ZR | 10 | (MC 전용) |
+| `D100~101` | D | 100–101 | (구간, `scan` 전용) |
 
 ### 워드.비트 (소수점) 규칙 — 미쓰비시 GX Works 호환
 
@@ -205,11 +374,13 @@ collector는 MC `0x4031`을 `E-2203(ADDR_OUT_OF_RANGE)`로 처리한다.
 
 | 파일 | 역할 |
 |------|------|
-| `client/addr.py` | 주소 파싱, 워드.비트(0–9, A–F) |
+| `client/addr.py` | 주소 파싱, 워드.비트(0–9, A–F), 구간 |
 | `client/modbus_map.py` | Modbus D/R → index 변환 |
 | `client/mc_client.py` | MC Protocol 디바이스 읽기/쓰기 |
-| `daemon.py` | `read_addr` / `write_addr` — MC vs Modbus 분기 |
+| `daemon.py` | 스캔·`cmd_r`·`read_addr` / `write_addr` |
 | `model/client_model.py` | `ModbusMapSettings`, 디바이스 스키마 |
+| `model/scan_model.py` | Scan SSOT (`ScanPoint`) |
+| `model/protocol_model.py` | `cmd_r` / `data` 와이어 DTO |
 
 ---
 

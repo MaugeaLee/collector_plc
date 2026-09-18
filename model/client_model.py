@@ -6,6 +6,8 @@ from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from model.scan_model import ScanPoint
+
 
 class ZmqSettings(BaseModel):
     """게이트웨이 IPC용 ZeroMQ 엔드포인트."""
@@ -89,9 +91,10 @@ class McSettings(BaseModel):
 class XgtSettings(BaseModel):
     """LS XGT Dedicated (E_NET). 블록 필드는 nullable.
 
-    - read_start + read_word_count 둘 다 유효: 연속 읽기 후 scan_addresses만 파싱
-    - 둘 다 비움: scan_addresses 점단위 읽기
+    - read_start + read_word_count 둘 다 유효: 연속 읽기 후 scan/scan_addresses 파싱
+    - 둘 다 비움: 점단위 읽기
     - 한쪽만 채움: 설정 오류
+    - scan 이 있으면 타입 포함 SSOT, 없으면 scan_addresses(레거시 word|bit)
     """
 
     mode: Literal["xgt"] = "xgt"
@@ -106,6 +109,8 @@ class XgtSettings(BaseModel):
     read_start: str | None = None
     # 연속 읽을 워드 수. 없으면 점단위
     read_word_count: int | None = None
+    # 다중 워드 int/ascii 합성 엔디안 (디바이스 공통)
+    word_endian: Literal["le", "be"] = "le"
 
     @model_validator(mode="after")
     def _block_fields_together(self) -> XgtSettings:
@@ -140,6 +145,9 @@ class ModbusTcpDevice(ModbusTcpSettings):
 
     device_key: str
     scan_addresses: list[str] = Field(default_factory=lambda: ["D100"])
+    # 신규 SSOT. 비어 있으면 scan_addresses(레거시) 사용
+    scan: list[ScanPoint] = Field(default_factory=list)
+    word_endian: Literal["le", "be"] = "le"
     scan_period_ms: int = 1000
 
     @field_validator("device_key")
@@ -151,6 +159,8 @@ class ModbusTcpDevice(ModbusTcpSettings):
 class ModbusRtuDevice(ModbusRtuSettings):
     device_key: str
     scan_addresses: list[str] = Field(default_factory=lambda: ["D100"])
+    scan: list[ScanPoint] = Field(default_factory=list)
+    word_endian: Literal["le", "be"] = "le"
     scan_period_ms: int = 1000
 
     @field_validator("device_key")
@@ -162,6 +172,8 @@ class ModbusRtuDevice(ModbusRtuSettings):
 class McDevice(McSettings):
     device_key: str
     scan_addresses: list[str] = Field(default_factory=lambda: ["D100"])
+    scan: list[ScanPoint] = Field(default_factory=list)
+    word_endian: Literal["le", "be"] = "le"
     scan_period_ms: int = 1000
 
     @field_validator("device_key")
@@ -174,6 +186,7 @@ class XgtDevice(XgtSettings):
     device_key: str
     # 폴백 빈 목록. 블록 모드면 publish 점, 점단위면 개별 읽기 목록
     scan_addresses: list[str] = Field(default_factory=list)
+    scan: list[ScanPoint] = Field(default_factory=list)
     scan_period_ms: int = 1000
 
     @field_validator("device_key")

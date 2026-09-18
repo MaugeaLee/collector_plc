@@ -7,6 +7,7 @@
                        E-2203 은 디바이스/주소 범위 밖 (MC·Modbus 공통)
   3xxx  프로토콜/디바이스 응답 (protocol)
   4xxx  요청/설정 오류 (request)  - E-41xx 는 cmd 요청 자체가 잘못된 경우
+                                   E-4003 은 메모리 주소 표기 형식/오타
   9xxx  분류 불가 (internal)
 """
 
@@ -41,8 +42,12 @@ class ClientErrorCode(StrEnum):
     PROTOCOL_ERROR = "E-3001"
     DEVICE_ERROR = "E-3002"
 
+    # 문법은 맞지만 이 모드/기능에서 지원하지 않는 주소 (예: XGT에 R 번지)
     UNSUPPORTED_ADDR = "E-4001"
+    # 디바이스/블록 설정 자체 오류 (read_start·read_word_count 등)
     INVALID_CONFIG = "E-4002"
+    # 메모리 주소 문자열 오타·형식 오류 (D100~R200, D100~, 비트 표기 등)
+    ADDR_FORMAT_INVALID = "E-4003"
 
     # cmd_r / cmd_w 요청 자체의 결함
     CMD_BODY_INVALID = "E-4101"

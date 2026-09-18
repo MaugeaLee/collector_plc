@@ -5,8 +5,16 @@ from __future__ import annotations
 import logging
 import socket
 import struct
+from typing import Literal
 
-from client.addr import parse_plc_addr
+from client.addr import (
+    as_signed16,
+    as_unsigned16,
+    parse_addr_span,
+    parse_plc_addr,
+    words_to_ascii,
+    words_to_int,
+)
 from client.errors import ClientError, to_client_error
 from client.xgt_addr import (
     resolve_block,
@@ -25,8 +33,19 @@ from client.xgt_frame import (
 )
 from model.client_model import XgtSettings
 from model.error_model import ClientErrorCode
+from model.scan_model import ScanPoint, ScanPointType
 
 logger = logging.getLogger(__name__)
+
+
+def _soft_addr_code(err: ClientError) -> str:
+    if err.code in (
+        ClientErrorCode.UNSUPPORTED_ADDR,
+        ClientErrorCode.ADDR_OUT_OF_RANGE,
+        ClientErrorCode.ADDR_FORMAT_INVALID,
+    ):
+        return err.code.value
+    return ClientErrorCode.ADDR_READ_FAILED.value
 
 
 class XgtClient:
@@ -40,6 +59,10 @@ class XgtClient:
 
     def _target(self) -> str:
         return f"{self.settings.host}:{self.settings.port}"
+
+    @property
+    def word_endian(self) -> Literal["le", "be"]:
+        return getattr(self.settings, "word_endian", "le")
 
     def connect(self) -> bool:
         self.close()
@@ -138,6 +161,29 @@ class XgtClient:
             )
         return words
 
+    def _read_words_raw(self, start_word: int, count: int) -> list[int]:
+        """연속 count 워드를 unsigned 로 읽는다."""
+        if count < 1:
+            raise ClientError(
+                ClientErrorCode.INVALID_CONFIG,
+                f"count 범위 오류: {count}",
+            )
+        if count == 1:
+            return [as_unsigned16(self._read_word_raw(start_word))]
+        var = f"%DB{start_word * 2}"
+        invoke = self._next_invoke()
+        req = build_continuous_read(
+            invoke_id=invoke,
+            var_name=var,
+            byte_count=count * 2,
+            cpu_info=self.settings.cpu_info,
+        )
+        raw = self._transact(req)
+        _h, _t, data = parse_read_ack(
+            raw, expected_type=DATA_TYPE_CONTINUOUS_BYTE
+        )
+        return [as_unsigned16(w) for w in words_le(data)]
+
     def read_device(self, addr: str, count: int = 1) -> list[int]:
         """점단위 읽기. count>1 이면 연속 워드(시작 addr 기준) — 비트 addr는 count=1만."""
         kind, num, bit = parse_plc_addr(addr)
@@ -159,23 +205,10 @@ class XgtClient:
                 f"count 범위 오류: {count}",
             )
         if count == 1:
-            return [self._read_word(num)]
-        # 짧은 연속 구간
-        var = f"%DB{num * 2}"
-        invoke = self._next_invoke()
-        req = build_continuous_read(
-            invoke_id=invoke,
-            var_name=var,
-            byte_count=count * 2,
-            cpu_info=self.settings.cpu_info,
-        )
-        raw = self._transact(req)
-        _h, _t, data = parse_read_ack(
-            raw, expected_type=DATA_TYPE_CONTINUOUS_BYTE
-        )
-        return words_le(data)
+            return [as_signed16(self._read_word_raw(num))]
+        return [as_signed16(w) for w in self._read_words_raw(num, count)]
 
-    def _read_word(self, word_num: int) -> int:
+    def _read_word_raw(self, word_num: int) -> int:
         invoke = self._next_invoke()
         req = build_word_read(
             invoke_id=invoke,
@@ -187,7 +220,7 @@ class XgtClient:
         words = words_le(data)
         if not words:
             raise ClientError(ClientErrorCode.PROTOCOL_ERROR, "WORD 응답 Data 없음")
-        return words[0]
+        return as_unsigned16(words[0])
 
     def _read_bit(self, word_num: int, bit: int) -> int:
         from client.xgt_addr import to_dx_var
@@ -204,59 +237,76 @@ class XgtClient:
             raise ClientError(ClientErrorCode.PROTOCOL_ERROR, "BIT 응답 Data 없음")
         return 1 if data[0] else 0
 
-    def read_scan_samples(self, addresses: list[str]) -> list[tuple[str, int | None, str | None]]:
+    def read_scan_point(self, point: ScanPoint) -> int | str:
+        """점단위로 ScanPoint 한 건을 읽어 디코드한다."""
+        span = parse_addr_span(point.addr)
+        if span.kind != "D":
+            raise ClientError(
+                ClientErrorCode.UNSUPPORTED_ADDR,
+                f"XGT는 현재 D 디바이스만 지원: {point.addr}",
+            )
+        if point.type is ScanPointType.BIT:
+            assert span.bit is not None
+            return self._read_bit(span.start, span.bit)
+        raw = self._read_words_raw(span.start, span.word_count)
+        if point.type is ScanPointType.WORD:
+            return as_signed16(raw[0])
+        if point.type is ScanPointType.INT:
+            return words_to_int(raw, endian=self.word_endian)
+        if point.type is ScanPointType.ASCII:
+            return words_to_ascii(raw, endian=self.word_endian)
+        raise ClientError(
+            ClientErrorCode.UNSUPPORTED_ADDR,
+            f"지원하지 않는 scan type: {point.type}",
+        )
+
+    def read_scan_samples(
+        self, points: list[ScanPoint]
+    ) -> list[tuple[str, ScanPointType, int | str | None, str | None]]:
         """스캔용: 블록 모드면 1회 읽고 파싱, 아니면 점단위.
 
-        반환: (addr, value, error_code|None)
+        반환: (addr, type, value, error_code|None)
         """
-        if not addresses:
+        if not points:
             return []
         block = resolve_block(
             self.settings.read_start, self.settings.read_word_count
         )
         if block is None:
-            out: list[tuple[str, int | None, str | None]] = []
-            for addr in addresses:
+            out: list[
+                tuple[str, ScanPointType, int | str | None, str | None]
+            ] = []
+            for point in points:
                 try:
-                    out.append((addr, int(self.read_device(addr, 1)[0]), None))
+                    out.append(
+                        (
+                            point.addr,
+                            point.type,
+                            self.read_scan_point(point),
+                            None,
+                        )
+                    )
                 except ClientError as e:
                     if e.code.requires_reconnect:
                         raise
-                    code = (
-                        e.code.value
-                        if e.code
-                        in (
-                            ClientErrorCode.UNSUPPORTED_ADDR,
-                            ClientErrorCode.ADDR_OUT_OF_RANGE,
-                        )
-                        else ClientErrorCode.ADDR_READ_FAILED.value
+                    out.append(
+                        (point.addr, point.type, None, _soft_addr_code(e))
                     )
-                    out.append((addr, None, code))
             return out
 
-        try:
-            words = self.read_block_words()
-        except ClientError:
-            raise
-
+        words = self.read_block_words()
         out = []
-        for addr in addresses:
+        for point in points:
             try:
                 val = value_from_block_words(
-                    words, start_word=block.start_word, addr=addr
+                    words,
+                    start_word=block.start_word,
+                    point=point,
+                    word_endian=self.word_endian,
                 )
-                out.append((addr, val, None))
+                out.append((point.addr, point.type, val, None))
             except ClientError as e:
                 if e.code.requires_reconnect:
                     raise
-                code = (
-                    e.code.value
-                    if e.code
-                    in (
-                        ClientErrorCode.UNSUPPORTED_ADDR,
-                        ClientErrorCode.ADDR_OUT_OF_RANGE,
-                    )
-                    else ClientErrorCode.ADDR_READ_FAILED.value
-                )
-                out.append((addr, None, code))
+                out.append((point.addr, point.type, None, _soft_addr_code(e)))
         return out

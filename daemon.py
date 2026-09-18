@@ -18,7 +18,13 @@ from uuid import UUID, uuid4
 
 from pydantic import TypeAdapter, ValidationError
 
-from client.addr import apply_word_bit, extract_word_bit, parse_plc_addr
+from client.addr import (
+    apply_word_bit,
+    as_signed16,
+    as_unsigned16,
+    extract_word_bit,
+    parse_plc_addr,
+)
 from client.base_client import BaseClient
 from client.errors import ClientError, to_client_error
 from client.mc_client import McClient
@@ -42,6 +48,8 @@ from model.protocol_model import (
     MsgWriteItemDTO,
     ProtocolHeaderDTO,
 )
+from model.scan_model import ScanPoint, ScanPointType, resolve_scan_points
+
 from zeromq_client.zmq_client import ZeroMqClient
 
 logger = logging.getLogger(__name__)
@@ -134,10 +142,10 @@ def _modbus_map_settings(client: BaseClient) -> ModbusMapSettings:
 
 
 def _read_modbus_word(client: BaseClient, spec: ModbusRegisterSpec) -> int:
-    """ModbusRegisterSpec에 따라 워드 1개를 읽는다."""
+    """ModbusRegisterSpec에 따라 워드 1개를 읽는다 (raw 16bit)."""
     if spec.register_kind == "holding":
-        return int(client.read_holding_registers(spec.index, count=1)[0])
-    return int(client.read_input_registers(spec.index, count=1)[0])
+        return as_unsigned16(client.read_holding_registers(spec.index, count=1)[0])
+    return as_unsigned16(client.read_input_registers(spec.index, count=1)[0])
 
 
 def _write_modbus_word(client: BaseClient, spec: ModbusRegisterSpec, value: int) -> None:
@@ -147,33 +155,38 @@ def _write_modbus_word(client: BaseClient, spec: ModbusRegisterSpec, value: int)
             ClientErrorCode.UNSUPPORTED_ADDR,
             f"Input Register({spec.plc_kind}{spec.plc_num})는 쓰기 불가",
         )
-    client.write_register(spec.index, value)
+    client.write_register(spec.index, as_unsigned16(value))
 
 
 def read_addr(client: BaseClient, addr: str) -> int:
     """주소 문자열 한 건을 읽어 정수로 반환한다.
-    D100.5 / D800.A 같이 워드.비트면 해당 비트를 0/1로 반환한다.
+    워드 값은 signed 16bit(-32768–32767), 워드.비트는 0/1.
     """
-    # MC: D/R/M/X… 문자열을 그대로 디바이스 지정
+    # MC/XGT: D/R/M/X… 문자열을 그대로 디바이스 지정
     if hasattr(client, "read_device"):
-        return int(client.read_device(addr, 1)[0])
+        _, _, bit = parse_plc_addr(addr)
+        val = int(client.read_device(addr, 1)[0])
+        return val if bit is not None else as_signed16(val)
 
     kind, num, bit = parse_plc_addr(addr)
     map_settings = _modbus_map_settings(client)
     spec = resolve_modbus_register(kind, num, map_settings)
     word = _read_modbus_word(client, spec)
     if bit is None:
-        return word
+        return as_signed16(word)
     assert_modbus_word_device(kind, addr)
     return extract_word_bit(word, bit)
 
 
 def write_addr(client: BaseClient, addr: str, value: int) -> None:
     """주소 문자열 한 건에 값을 쓴다.
+    워드 쓰기는 signed/unsigned 모두 16bit로 정규화한다.
     D100.5 / D800.A 는 읽기-수정-쓰기로 해당 비트만 반영한다.
     """
     if hasattr(client, "write_device"):
-        client.write_device(addr, [int(value)])
+        _, _, bit = parse_plc_addr(addr)
+        out = int(value) if bit is not None else as_unsigned16(value)
+        client.write_device(addr, [out])
         return
 
     kind, num, bit = parse_plc_addr(addr)
@@ -186,13 +199,13 @@ def write_addr(client: BaseClient, addr: str, value: int) -> None:
     word = _read_modbus_word(client, spec)
     _write_modbus_word(client, spec, apply_word_bit(word, bit, value))
 
-
 def _addr_soft_error_code(err: ClientError, *, write: bool) -> str:
     """번지 soft-fail용 에러 코드 문자열을 고른다."""
     # 의미가 분명한 번지 오류는 그대로 노출 (E-2201/2202로 덮지 않음)
     if err.code in (
         ClientErrorCode.UNSUPPORTED_ADDR,
         ClientErrorCode.ADDR_OUT_OF_RANGE,
+        ClientErrorCode.ADDR_FORMAT_INVALID,
     ):
         return err.code.value
     return (
@@ -203,9 +216,16 @@ def _addr_soft_error_code(err: ClientError, *, write: bool) -> str:
 
 
 def read_sample(client: BaseClient, addr: str) -> MsgSampleDTO:
-    """단건 샘플을 읽고, 비연결 오류는 sample.error에 담는다."""
+    """단건 샘플을 읽고, 비연결 오류는 sample.error에 담는다 (레거시 word|bit)."""
     try:
-        return MsgSampleDTO(addr=addr, value=read_addr(client, addr), error=None)
+        _, _, bit = parse_plc_addr(addr)
+        point_type = ScanPointType.BIT if bit is not None else ScanPointType.WORD
+        return MsgSampleDTO(
+            addr=addr,
+            type=point_type,
+            value=read_addr(client, addr),
+            error=None,
+        )
     except Exception as e:
         err = _as_client_error(e)
         if err.code.requires_reconnect:
@@ -224,24 +244,60 @@ def read_sample(client: BaseClient, addr: str) -> MsgSampleDTO:
         )
 
 
-def read_samples(client: BaseClient, addresses: list[str]) -> list[MsgSampleDTO]:
-    """주소 목록을 순회하며 샘플 리스트를 만든다.
+def read_sample_point(client: BaseClient, point: ScanPoint) -> MsgSampleDTO:
+    """ScanPoint 단건 읽기 (XGT 외: word|bit만, int/ascii는 soft-fail)."""
+    try:
+        if point.type in (ScanPointType.INT, ScanPointType.ASCII):
+            raise ClientError(
+                ClientErrorCode.UNSUPPORTED_ADDR,
+                f"{point.type.value} 는 현재 XGT scan 경로만 지원: {point.addr}",
+            )
+        return MsgSampleDTO(
+            addr=point.addr,
+            type=point.type,
+            value=read_addr(client, point.addr),
+            error=None,
+        )
+    except Exception as e:
+        err = _as_client_error(e)
+        if err.code.requires_reconnect:
+            raise err from e
+        logger.warning(
+            "addr read soft-fail %s: %s(%s) %s",
+            point.addr,
+            err.code.value,
+            err.code.label,
+            err.detail or err,
+        )
+        return MsgSampleDTO(
+            addr=point.addr,
+            type=point.type,
+            value=None,
+            error=_addr_soft_error_code(err, write=False),
+        )
 
-    XGT 블록 모드면 연속 읽기 1회 후 scan_addresses만 파싱한다.
+
+def read_samples(
+    client: BaseClient,
+    points: list[ScanPoint],
+) -> list[MsgSampleDTO]:
+    """스캔 포인트 목록을 읽어 샘플 리스트를 만든다.
+
+    XGT 는 read_scan_samples 로 블록/점단위 일괄 처리.
     """
     read_scan = getattr(client, "read_scan_samples", None)
     if callable(read_scan):
-        return _read_scan_samples_bulk(client, addresses, read_scan)
-    return [read_sample(client, addr) for addr in addresses]
+        return _read_scan_samples_bulk(client, points, read_scan)
+    return [read_sample_point(client, p) for p in points]
 
 
 def _read_scan_samples_bulk(
     _client: BaseClient,
-    addresses: list[str],
+    points: list[ScanPoint],
     read_scan,
 ) -> list[MsgSampleDTO]:
     try:
-        rows = read_scan(addresses)
+        rows = read_scan(points)
     except Exception as e:
         err = _as_client_error(e)
         if err.code.requires_reconnect:
@@ -254,16 +310,21 @@ def _read_scan_samples_bulk(
         )
         code = _addr_soft_error_code(err, write=False)
         return [
-            MsgSampleDTO(addr=a, value=None, error=code) for a in addresses
+            MsgSampleDTO(addr=p.addr, type=p.type, value=None, error=code)
+            for p in points
         ]
 
     out: list[MsgSampleDTO] = []
-    for addr, value, err_code in rows:
+    for addr, point_type, value, err_code in rows:
         if err_code is None:
-            out.append(MsgSampleDTO(addr=addr, value=value, error=None))
+            out.append(
+                MsgSampleDTO(addr=addr, type=point_type, value=value, error=None)
+            )
             continue
         logger.warning("addr read soft-fail %s: %s", addr, err_code)
-        out.append(MsgSampleDTO(addr=addr, value=None, error=err_code))
+        out.append(
+            MsgSampleDTO(addr=addr, type=point_type, value=None, error=err_code)
+        )
     return out
 
 
@@ -417,12 +478,20 @@ def _emit_device_health(
     )
 
 
+def device_scan_points(device: DeviceSettings) -> list[ScanPoint]:
+    """디바이스에서 유효 스캔 포인트 목록을 고른다 (scan 우선)."""
+    return resolve_scan_points(
+        scan=getattr(device, "scan", None),
+        scan_addresses=getattr(device, "scan_addresses", None),
+    )
+
+
 def scan_once(
     device: DeviceSettings,
     client: BaseClient,
 ) -> MsgDataDTO:
-    """스캔 주소들을 한 번 읽어 MsgDataDTO를 만든다."""
-    samples = read_samples(client, device.scan_addresses)
+    """스캔 포인트들을 한 번 읽어 MsgDataDTO를 만든다."""
+    samples = read_samples(client, device_scan_points(device))
     return MsgDataDTO(
         device_key=device.device_key,
         sample_ms=now_ms(),
@@ -581,9 +650,10 @@ def _commit_device(
             slot.reload.set()
 
     logger.info(
-        "[%s] %s applied addrs=%s period_ms=%s reload=%s",
+        "[%s] %s applied scan=%s addrs=%s period_ms=%s reload=%s",
         body.device_key,
         body.action.value,
+        [p.model_dump(mode="json") for p in getattr(new_device, "scan", [])],
         new_device.scan_addresses,
         new_device.scan_period_ms,
         reload_client,
@@ -604,8 +674,12 @@ def _apply_set_scan(
     header: ProtocolHeaderDTO,
     body: MsgCmdRDTO,
 ) -> None:
-    """스캔 주소/주기만 반영한다 (재연결 없음)."""
-    if body.d_address is None and body.period_ms is None:
+    """스캔 주소/주기만 반영한다 (재연결 없음). scan 우선, d_address 병행."""
+    if (
+        body.scan is None
+        and body.d_address is None
+        and body.period_ms is None
+    ):
         _emit_cmd_ack(
             cfg,
             gateway_address=header.gateway_address,
@@ -613,14 +687,19 @@ def _apply_set_scan(
             device_key=body.device_key,
             action=body.action,
             code=ClientErrorCode.CMD_FIELD_MISSING,
-            reason="d_address/period_ms 없음",
+            reason="scan/d_address/period_ms 없음",
         )
         return
 
     with slot.lock:
         data = slot.device.model_dump(mode="json")
-    if body.d_address is not None:
+    if body.scan is not None:
+        # 신규 SSOT. 레거시 목록도 addr 만 미러링해 로그/구버전 호환
+        data["scan"] = [p.model_dump(mode="json") for p in body.scan]
+        data["scan_addresses"] = [p.addr for p in body.scan]
+    elif body.d_address is not None:
         data["scan_addresses"] = list(body.d_address)
+        data["scan"] = []
     if body.period_ms is not None:
         data["scan_period_ms"] = body.period_ms
 
@@ -808,10 +887,11 @@ def run_device(cfg: Settings, slot: DeviceSlot) -> None:
     client = build_client(device)
 
     logger.info(
-        "[%s] worker start mode=%s target=%s addrs=%s period_ms=%s",
+        "[%s] worker start mode=%s target=%s scan=%s addrs=%s period_ms=%s",
         device.device_key,
         device.mode,
         client._target(),
+        [p.model_dump(mode="json") for p in device_scan_points(device)],
         device.scan_addresses,
         device.scan_period_ms,
     )
