@@ -24,8 +24,8 @@ Edge PLC 수집기. `devices[]`마다 워커 스레드로 PLC를 주기 스캔�
 | `R3000` (단일 워드) | `word` |
 | `D100~101` 등 구간 | **불가** → `scan` 사용 |
 
-`SET_SCAN`에서 `scan`을 보내면 collector는 `scan_addresses`에 addr만 미러링한다(로그·구버전 호환).  
-`d_address`만 보내면 `scan`은 비우고 레거시 경로로 동작한다.
+`SET_SCAN`은 `scan`만 갱신한다(`scan_addresses`를 만들거나 미러링하지 않음).  
+`d_address`만 오면 word|bit로 `scan`에 승격한다. `scan_addresses`는 `plc_setting.json`에 키가 남아 있을 때의 읽기 폴백만.
 
 ### ScanPoint
 
@@ -38,12 +38,12 @@ Edge PLC 수집기. `devices[]`마다 워커 스레드로 PLC를 주기 스캔�
 | `word` | 단일 워드 (`D100`) | `int` (16bit) |
 | `bit` | 워드.비트 단일 (`D100.0`, `D800.A`) | `0` / `1` |
 | `int` | **2워드 이상 구간** (`D100~101`) | 다중 워드 정수 (엔디안: 디바이스 `word_endian`) |
+| `long word` | **정확히 2워드** 구간 (`D100~101`) | DWORD 정수 (`int`와 동일 디코드) |
 | `ascii` | 비트 불가, 1워드 이상 구간 또는 단일 (`D100~103`) | 문자열 |
 
 구간 표기: `D100~200`, `D100~D200`, `ZR10~ZR20` (`~` 앞뒤 공백 허용). 시작·끝 디바이스 코드가 다르면 거부.
 
-> **구현 범위:** `int` / `ascii`는 현재 **XGT `scan` 경로**에서만 읽기 지원.  
-> MC / Modbus는 `word`·`bit`만. 그 외 type은 샘플 `error`로 soft-fail (`E-4001`).
+> **구현 범위:** `int` / `long word` / `ascii`는 XGT·MC·Modbus `scan` 경로에서 읽기 지원.
 
 ### 스캔 목록이 오는 경로
 

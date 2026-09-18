@@ -56,7 +56,7 @@ def decode_scan_words(
         return extract_word_bit(raw[0], span.bit)
     if point.type is ScanPointType.WORD:
         return as_signed16(raw[0])
-    if point.type is ScanPointType.INT:
+    if point.type in (ScanPointType.INT, ScanPointType.LONG_WORD):
         return words_to_int(raw, endian=endian)
     if point.type is ScanPointType.ASCII:
         return words_to_ascii(raw, endian=endian)

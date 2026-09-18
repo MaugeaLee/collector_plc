@@ -13,6 +13,7 @@
         {"addr": "D100", "type": "word"},
         {"addr": "D100.0", "type": "bit"},
         {"addr": "D200~201", "type": "int"},
+        {"addr": "D210~211", "type": "long word"},
         {"addr": "D300~310", "type": "ascii"}
       ],
       "scan_period_ms": 1000

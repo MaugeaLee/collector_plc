@@ -58,7 +58,12 @@ from model.protocol_model import (
     MsgWriteItemDTO,
     ProtocolHeaderDTO,
 )
-from model.scan_model import ScanPoint, ScanPointType, resolve_scan_points
+from model.scan_model import (
+    ScanPoint,
+    ScanPointType,
+    legacy_addr_to_scan_point,
+    resolve_scan_points,
+)
 from zeromq_client.zmq_client import ZeroMqClient
 
 logger = logging.getLogger(__name__)
@@ -759,12 +764,30 @@ def _apply_set_scan(
     with slot.lock:
         data = slot.device.model_dump(mode="json")
     if body.scan is not None:
-        # 신규 SSOT. 레거시 목록도 addr 만 미러링해 로그/구버전 호환
         data["scan"] = [p.model_dump(mode="json") for p in body.scan]
-        data["scan_addresses"] = [p.addr for p in body.scan]
     elif body.d_address is not None:
-        data["scan_addresses"] = list(body.d_address)
-        data["scan"] = []
+        # 레거시 d_address → scan 승격. scan_addresses 는 쓰지 않음
+        # (plc_setting 에 남아 있을 때만 읽기 폴백)
+        try:
+            points = [legacy_addr_to_scan_point(a) for a in body.d_address]
+        except (ValueError, ClientError) as e:
+            logger.warning(
+                "[%s] %s invalid d_address: %s",
+                body.device_key,
+                body.action.value,
+                e,
+            )
+            _emit_cmd_ack(
+                cfg,
+                gateway_address=header.gateway_address,
+                ref_msg_id=header.msg_id,
+                device_key=body.device_key,
+                action=body.action,
+                code=ClientErrorCode.INVALID_CONFIG,
+                reason=str(e),
+            )
+            return
+        data["scan"] = [p.model_dump(mode="json") for p in points]
     if body.period_ms is not None:
         data["scan_period_ms"] = body.period_ms
 

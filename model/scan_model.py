@@ -18,6 +18,7 @@ class ScanPointType(StrEnum):
     WORD = "word"
     BIT = "bit"
     INT = "int"
+    LONG_WORD = "long word"  # DWORD 2워드 (상위 type 표기 호환)
     ASCII = "ascii"
 
 
@@ -50,6 +51,11 @@ class ScanPoint(BaseModel):
                 raise ValueError(
                     f"type=int 는 2워드 이상 구간(D100~101)만 허용: {self.addr!r}"
                 )
+        elif self.type is ScanPointType.LONG_WORD:
+            if span.bit is not None or word_count != 2:
+                raise ValueError(
+                    f"type=long word 는 2워드 구간(D100~101)만 허용: {self.addr!r}"
+                )
         elif self.type is ScanPointType.ASCII:
             if span.bit is not None:
                 raise ValueError(
@@ -68,7 +74,7 @@ def legacy_addr_to_scan_point(addr: str) -> ScanPoint:
     if span.end != span.start:
         raise ValueError(
             f"레거시 scan_addresses 는 구간/타입 없이 word·bit만 허용: {addr!r}. "
-            "구간·int·ascii 는 scan[] 를 사용하세요"
+            "구간·int·long word·ascii 는 scan[] 를 사용하세요"
         )
     return ScanPoint(addr=addr.strip(), type=ScanPointType.WORD)
 
