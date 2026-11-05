@@ -10,8 +10,8 @@
       "port": 502,
       "word_endian": "le",
       "scan": [
-        {"addr": "D100", "type": "word"},
-        {"addr": "D100.0", "type": "bit"},
+        {"addr": "D100", "type": "word", "name": "run_status"},
+        {"addr": "D100.0", "type": "bit", "name": "run_bit"},
         {"addr": "D200~201", "type": "int"},
         {"addr": "D210~211", "type": "long word"},
         {"addr": "D300~310", "type": "ascii"}

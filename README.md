@@ -6,14 +6,14 @@ Edge PLC 수집기. `devices[]`마다 워커 스레드로 PLC를 주기 스캔�
 
 ## Scan SSOT (타 프로세스 계약)
 
-주기 스캔 목록의 **단일 진실 공급원(SSOT)** 은 `ScanPoint` (`addr` + `type`) 이다.  
+주기 스캔 목록의 **단일 진실 공급원(SSOT)** 은 `ScanPoint` (`addr` + `type`, 선택 `name`) 이다.  
 스키마 정의: `model/scan_model.py`, 와이어 DTO: `model/protocol_model.py`.
 
 ### 두 포맷
 
 | 역할 | `plc_setting.json` | `cmd_r` SET_SCAN body |
 |------|--------------------|------------------------|
-| **신규 SSOT** (권장) | `scan: [{ "addr", "type" }, …]` | `scan: [{ "addr", "type" }, …]` |
+| **신규 SSOT** (권장) | `scan: [{ "addr", "type", "name"? }, …]` | `scan: [{ "addr", "type", "name"? }, …]` |
 | **레거시** | `scan_addresses: ["D100", …]` | `d_address: ["D100", …]` |
 
 **우선순위:** `scan`이 비어 있지 않으면 `scan`만 사용. 없으면 레거시 목록을 word|bit로 승격.
@@ -30,8 +30,10 @@ Edge PLC 수집기. `devices[]`마다 워커 스레드로 PLC를 주기 스캔�
 ### ScanPoint
 
 ```json
-{ "addr": "D100", "type": "word" }
+{ "addr": "D100", "type": "word", "name": "run_status" }
 ```
+
+`name` 은 그 주소에 어떤 데이터가 있는지 적는 라벨이다. 생략할 수 있고, 조회·매칭 키는 `addr` 이다. 비어 있거나 공백만 있으면 없는 것으로 본다. 같은 이름을 여러 주소에 써도 된다.
 
 | `type` | `addr` 제약 | 값 |
 |--------|-------------|-----|
@@ -91,7 +93,7 @@ Edge PLC 수집기. `devices[]`마다 워커 스레드로 PLC를 주기 스캔�
     "timeout_ms": 3000,
     "period_ms": 1000,
     "scan": [
-      { "addr": "R3000", "type": "word" },
+      { "addr": "R3000", "type": "word", "name": "run_status" },
       { "addr": "D800.0", "type": "bit" },
       { "addr": "D100~101", "type": "int" }
     ]
@@ -120,7 +122,7 @@ Edge PLC 수집기. `devices[]`마다 워커 스레드로 PLC를 주기 스캔�
   "scan_period_ms": 1000,
   "word_endian": "le",
   "scan": [
-    { "addr": "D490000", "type": "word" },
+    { "addr": "D490000", "type": "word", "name": "run_status" },
     { "addr": "D490000.0", "type": "bit" },
     { "addr": "D490100~490101", "type": "int" }
   ]
@@ -142,7 +144,7 @@ Edge PLC 수집기. `devices[]`마다 워커 스레드로 PLC를 주기 스캔�
   "device_key": "plc-mitsubishi-1",
   "sample_ms": 0,
   "samples": [
-    { "addr": "R3000", "type": "word", "value": 12, "error": null },
+    { "addr": "R3000", "name": "run_status", "type": "word", "value": 12, "error": null },
     { "addr": "D800.0", "type": "bit", "value": 1, "error": null },
     { "addr": "D510300", "type": "word", "value": null, "error": "E-2203" }
   ]

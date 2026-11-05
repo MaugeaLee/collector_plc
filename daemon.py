@@ -322,12 +322,7 @@ def read_sample_point(client: BaseClient, point: ScanPoint) -> MsgSampleDTO:
             value = client.read_scan_point(point)
         else:
             value = _read_modbus_scan_point(client, point)
-        return MsgSampleDTO(
-            addr=point.addr,
-            type=point.type,
-            value=value,
-            error=None,
-        )
+        return _sample_dto(point, value=value, error=None)
     except Exception as e:
         err = _as_client_error(e)
         if err.code.requires_reconnect:
@@ -339,9 +334,8 @@ def read_sample_point(client: BaseClient, point: ScanPoint) -> MsgSampleDTO:
             err.code.label,
             err.detail or err,
         )
-        return MsgSampleDTO(
-            addr=point.addr,
-            type=point.type,
+        return _sample_dto(
+            point,
             value=None,
             error=_addr_soft_error_code(err, write=False),
         )
@@ -379,23 +373,38 @@ def _read_scan_samples_bulk(
             err.detail or err,
         )
         code = _addr_soft_error_code(err, write=False)
-        return [
-            MsgSampleDTO(addr=p.addr, type=p.type, value=None, error=code)
-            for p in points
-        ]
+        return [_sample_dto(p, value=None, error=code) for p in points]
 
     out: list[MsgSampleDTO] = []
-    for addr, point_type, value, err_code in rows:
+    for point, (addr, point_type, value, err_code) in zip(points, rows, strict=True):
         if err_code is None:
             out.append(
-                MsgSampleDTO(addr=addr, type=point_type, value=value, error=None)
+                _sample_dto(point, addr=addr, point_type=point_type, value=value, error=None)
             )
             continue
         logger.warning("addr read soft-fail %s: %s", addr, err_code)
         out.append(
-            MsgSampleDTO(addr=addr, type=point_type, value=None, error=err_code)
+            _sample_dto(point, addr=addr, point_type=point_type, value=None, error=err_code)
         )
     return out
+
+
+def _sample_dto(
+    point: ScanPoint,
+    *,
+    value: int | str | None,
+    error: str | None,
+    addr: str | None = None,
+    point_type: ScanPointType | None = None,
+) -> MsgSampleDTO:
+    """스캔 포인트를 DATA 샘플로 만든다. name 은 주소 의미 라벨로만 싣는다."""
+    return MsgSampleDTO(
+        addr=addr if addr is not None else point.addr,
+        name=point.name,
+        type=point_type if point_type is not None else point.type,
+        value=value,
+        error=error,
+    )
 
 
 def write_item(client: BaseClient, item: MsgWriteItemDTO) -> MsgWriteItemDTO:

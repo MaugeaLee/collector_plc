@@ -6,7 +6,7 @@ from enum import StrEnum
 from typing import List, Optional, Union
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_serializer
 
 from model.client_model import DeviceSettings
 from model.error_model import ClientErrorCode
@@ -99,9 +99,18 @@ class MsgHealthDTO(BaseModel):
 
 class MsgSampleDTO(BaseModel):
     addr: str
+    # scan.name. 주소에 어떤 데이터가 있는지 적는 라벨. 없으면 직렬화에서 뺀다.
+    name: Optional[str] = None
     type: Optional[ScanPointType] = None
     value: Optional[Union[int, str]] = None
     error: Optional[str] = None
+
+    @model_serializer(mode="wrap")
+    def _omit_unset_name(self, handler):
+        data = handler(self)
+        if data.get("name") is None:
+            data.pop("name", None)
+        return data
 
 
 class MsgDataDTO(BaseModel):

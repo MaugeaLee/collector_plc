@@ -2,13 +2,14 @@
 
 SSOT: 모든 PLC mode(XGT/MC/Modbus)가 동일 ScanPoint·디코드를 쓴다.
 레거시 scan_addresses/d_address 는 word|bit 로만 승격.
+name 은 주소가 어떤 값인지 적는 라벨이다. 조회 키는 addr 이다.
 """
 
 from __future__ import annotations
 
 from enum import StrEnum
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, field_validator, model_serializer, model_validator
 
 from client.addr import parse_addr_span
 from client.errors import ClientError
@@ -23,10 +24,31 @@ class ScanPointType(StrEnum):
 
 
 class ScanPoint(BaseModel):
-    """스캔 한 점. addr는 D100 / D100.A / D100~200 / D100~D200 / ZR10~ZR20."""
+    """스캔 한 점. addr는 D100 / D100.A / D100~200 / D100~D200 / ZR10~ZR20.
+
+    name 은 그 주소에 어떤 데이터가 있는지 적는 라벨이다. 없어도 된다.
+    """
 
     addr: str
     type: ScanPointType
+    name: str | None = None
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _normalize_name(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("name 은 문자열이어야 합니다")
+        text = value.strip()
+        return text or None
+
+    @model_serializer(mode="wrap")
+    def _omit_unset_name(self, handler):
+        data = handler(self)
+        if data.get("name") is None:
+            data.pop("name", None)
+        return data
 
     @model_validator(mode="after")
     def _addr_matches_type(self) -> ScanPoint:
